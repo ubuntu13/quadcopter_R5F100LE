@@ -1,0 +1,163 @@
+#include "filter.h"
+#include "mpu6050.h"
+#include <math.h>
+
+#define 	Buf_Num  	20
+
+struct Angle Attitude, Expect;
+struct F_XYZ Fil_Accel, Fil_Gyro;
+
+s16 Buf_AX[Buf_Num], Buf_AY[Buf_Num], Buf_AZ[Buf_Num];
+
+extern u8 MPU6050_Data_Buf[14];
+
+u8 buffer[26] = 
+{
+	'G', 'Y'
+};
+
+void Send_MPU_Data(void)
+{
+	u8 i = 0;
+	
+ 	buffer[2] = (u8)((u32)Fil_Accel.X>>24);
+	buffer[3] = (u8)((u32)Fil_Accel.X>>16);
+	buffer[4] = (u8)((u32)Fil_Accel.X>>8);
+	buffer[5] = (u8)((u32)Fil_Accel.X);
+	buffer[6] = (u8)((u32)Fil_Accel.Y>>24);
+	buffer[7] = (u8)((u32)Fil_Accel.Y>>16);
+	buffer[8] = (u8)((u32)Fil_Accel.Y>>8);
+	buffer[9] = (u8)((u32)Fil_Accel.Y);
+	buffer[10] = (u8)((u32)Fil_Accel.Z>>24);
+	buffer[11] = (u8)((u32)Fil_Accel.Z>>16);
+	buffer[12] = (u8)((u32)Fil_Accel.Z>>8);
+	buffer[13] = (u8)((u32)Fil_Accel.Z);
+	
+	buffer[14] = (u8)((u32)Fil_Gyro.X>>24);
+	buffer[15] = (u8)((u32)Fil_Gyro.X>>16);
+	buffer[16] = (u8)((u32)Fil_Gyro.X>>8);
+	buffer[17] = (u8)((u32)Fil_Gyro.Y);
+	buffer[18] = (u8)((u32)Fil_Gyro.Y>>24);
+	buffer[19] = (u8)((u32)Fil_Gyro.Y>>16);
+	buffer[20] = (u8)((u32)Fil_Gyro.Y>>8);
+	buffer[21] = (u8)((u32)Fil_Gyro.Z);
+	buffer[22] = (u8)((u32)Fil_Gyro.Z>>24);
+	buffer[23] = (u8)((u32)Fil_Gyro.Z>>16);
+	buffer[24] = (u8)((u32)Fil_Gyro.Z>>8);
+	buffer[25] = (u8)((u32)Fil_Gyro.Z);
+	
+	R_UART0_Send(buffer, 26);
+}
+
+void Filter_Init(void)
+{
+	Fil_Gyro.X = 0;
+	Fil_Gyro.Y = 0;
+	Fil_Gyro.Z = 0;
+	
+	Fil_Accel.X = 0;
+	Fil_Accel.Y = 0;
+	Fil_Accel.Z = 0;
+}
+
+void IMU_Prepare(void)
+{
+    u8 i = 0;
+	static u8 Buf_Cnt = 0;
+	s32 temp_X=0, temp_Y=0, temp_Z=0;
+	
+	Fil_Gyro.X = MPU_Data.GX * 0.0002656;
+	Fil_Gyro.Y = MPU_Data.GY * 0.0002656;
+	Fil_Gyro.Z = MPU_Data.GZ * 0.0002656;
+	
+	Buf_AX[Buf_Cnt] = MPU_Data.AX;
+	Buf_AY[Buf_Cnt] = MPU_Data.AY;
+	Buf_AZ[Buf_Cnt] = MPU_Data.AZ;
+	
+	for(i=0; i<Buf_Num; i++)
+	{
+		temp_X += Buf_AX[i];
+		temp_Y += Buf_AY[i];
+		temp_Z += Buf_AZ[i];
+	}
+	
+	Fil_Accel.X = (float)(temp_X / Buf_Num);
+	Fil_Accel.Y = (float)(temp_Y / Buf_Num);
+	Fil_Accel.Z = (float)(temp_Z / Buf_Num);
+	
+	Buf_Cnt ++;
+	if(Buf_Cnt == Buf_Num)
+	{
+		Buf_Cnt = 0;
+	}
+	
+	//Send_MPU_Data();
+}
+
+#define Kp 		2.0f    //0.1f 		//0.8f		//2.0f
+#define Ki 		0.008f  //0.001f 	//0.002f	//0.008
+#define halfT 	0.002f
+
+float q0 = 1, q1 = 0, q2 = 0, q3 = 0;
+float exInt = 0, eyInt = 0, ezInt = 0;
+void IMU_Update(float gx, float gy, float gz, float ax, float ay, float az)
+{
+  	float norm;
+  	float vx, vy, vz;
+  	float ex, ey, ez;
+	
+	float q0q0 = q0*q0;
+  	float q0q1 = q0*q1;
+  	float q0q2 = q0*q2;
+//	float q0q3 = q0*q3;
+  	float q1q1 = q1*q1;
+//	float q1q2 = q1*q2;
+  	float q1q3 = q1*q3;
+  	float q2q2 = q2*q2;   
+  	float q2q3 = q2*q3;
+  	float q3q3 = q3*q3;
+
+  	norm = sqrt(ax*ax + ay*ay + az*az);      
+  	ax = ax / norm;
+  	ay = ay / norm;
+  	az = az / norm;
+           
+  	vx = 2*(q1q3 - q0q2);
+	vy = 2*(q0q1 + q2q3);
+	vz = q0q0 - q1q1 - q2q2 + q3q3;
+
+  	ex = (ay*vz - az*vy);
+  	ey = (az*vx - ax*vz);
+  	ez = (ax*vy - ay*vx);
+
+  	exInt = exInt + ex * Ki;
+  	eyInt = eyInt + ey * Ki;
+  	ezInt = ezInt + ez * Ki;
+
+  	gx = gx + Kp*ex + exInt;					   							
+  	gy = gy + Kp*ey + eyInt;
+  	gz = gz + Kp*ez + ezInt;
+					   
+  	q0 = q0 + (-q1*gx - q2*gy - q3*gz)*halfT;
+  	q1 = q1 + (q0*gx + q2*gz - q3*gy)*halfT;
+  	q2 = q2 + (q0*gy - q1*gz + q3*gx)*halfT;
+  	q3 = q3 + (q0*gz + q1*gy - q2*gx)*halfT;
+
+  	norm = sqrt(q0q0 + q1q1 + q2q2 + q3q3);
+  
+	q0 = q0 / norm;
+  	q1 = q1 / norm;
+  	q2 = q2 / norm;
+  	q3 = q3 / norm;
+
+  	Attitude.Pitch = 57.3 * asinf(2*q1q3 - 2*q0q2);
+  	Attitude.Roll  = 57.3 * atan2f(2*q2q3 + 2*q0q1, -2*q1q1-2*q2q2 + 1); //2*q0q1 + 2*q2q3, q0q0 - q1q1 - q2q2 + q3q3
+	Attitude.Yaw  += MPU_Data.GZ * 0.015267 * 0.004f;
+}
+
+void Filter(void)
+{
+	IMU_Prepare();
+	
+	IMU_Update(Fil_Gyro.X, Fil_Gyro.Y, Fil_Gyro.Z, Fil_Accel.X, Fil_Accel.Y, Fil_Accel.Z);
+}
